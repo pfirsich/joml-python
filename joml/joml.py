@@ -1,5 +1,8 @@
-import lark
+from collections import Counter
 import json
+import enum
+
+import lark
 
 grammar = r"""
 _WS: /[ \t\r\n]/+
@@ -62,22 +65,73 @@ class ParseError(Exception):
         return s
 
 
-class Transformer(lark.Transformer):
-    def __init__(self, dict_type):
+class Node:
+    class Type(enum.Enum):
+        NULL = enum.auto()
+        BOOL = enum.auto()
+        INTEGER = enum.auto()
+        FLOAT = enum.auto()
+        STRING = enum.auto()
+        ARRAY = enum.auto()
+        DICTIONARY = enum.auto()
+
+    def __init__(self, type, data):
+        self.type = type
+        self.data = data
+        # self.annotation
+
+    def map(self, mapping, default=lambda node: node.data):
+        func = mapping.get(self.type, default)
+        if self.type == Node.Type.ARRAY:
+            return func(Node(self.type, [v.map(mapping, default) for v in self.data]))
+        elif self.type == Node.Type.DICTIONARY:
+            return func(
+                Node(self.type, [(k, v.map(mapping, default)) for k, v in self.data])
+            )
+        else:
+            return func(self)
+
+    @staticmethod
+    def unpack_dict(node):
+        keys = [item[0] for item in node.data]
+        dups = Counter(keys) - Counter(set(keys))
+        if len(dups) > 0:
+            raise ValueError(
+                "Duplicate keys: {}".format(
+                    ", ".join("'{}' ({} times)".format(key, dups[key]) for key in dups)
+                )
+            )
+        return dict(node.data)
+
+    def unpack(self):
+        return self.map({Node.Type.DICTIONARY: lambda node: Node.unpack_dict(node)})
+
+    @staticmethod
+    def full_unpack_default(node):
+        return {"type": node.type.name, "value": node.data}
+
+    def full_unpack(self):
+        return self.map({}, lambda node: Node.full_unpack_default(node))
+
+    def __str__(self):
+        return "Node({}, {})".format(
+            str(self.type), self.map({}, lambda node: str(node.data))
+        )
+
+
+class NodeTransformer(lark.Transformer):
+    def __init__(self):
         super().__init__()
-        self.dict_type = dict_type
 
-    def kvpairs(self, children):
-        return self.dict_type(children)
-
-    array = list
-    null = lambda self, _: None
-    bool = lambda self, children: children[0] == "true"
+    kvpairs = lambda self, children: Node(Node.Type.DICTIONARY, children)
+    array = lambda self, children: Node(Node.Type.ARRAY, list(children))
+    null = lambda self, _: Node(Node.Type.NULL, None)
+    bool = lambda self, children: Node(Node.Type.BOOL, children[0] == "true")
     key = lambda self, children: str(children[0])
     kvpair = tuple
-    integer = lambda self, children: int(children[0], 0)
-    float = lambda self, children: float(children[0])
-    string = lambda self, children: children[0][1:-1]
+    integer = lambda self, children: Node(Node.Type.INTEGER, int(children[0], 0))
+    float = lambda self, children: Node(Node.Type.FLOAT, float(children[0]))
+    string = lambda self, children: Node(Node.Type.STRING, children[0][1:-1])
 
 
 def get_parser():
@@ -86,13 +140,13 @@ def get_parser():
     return get_parser.parser
 
 
-def loads(s: str, dict_type: callable = list):
+def loads(s: str):
     try:
         tree = get_parser().parse(s)
-        return Transformer(dict_type).transform(tree)
+        return NodeTransformer().transform(tree)
     except lark.exceptions.UnexpectedInput as exc:
         raise ParseError(exc, s) from exc
 
 
-def load(file, dict_type: callable = list):
-    return loads(file.read(), dict_type=dict_type)
+def load(file):
+    return loads(file.read())
