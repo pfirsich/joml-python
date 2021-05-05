@@ -92,19 +92,20 @@ class Node:
             return func(self)
 
     @staticmethod
-    def unpack_dict(node):
-        keys = [item[0] for item in node.data]
-        dups = Counter(keys) - Counter(set(keys))
-        if len(dups) > 0:
-            raise ValueError(
-                "Duplicate keys: {}".format(
+    def unpack_dict(node, check_for_duplicate_keys):
+        if check_for_duplicate_keys:
+            keys = [item[0] for item in node.data]
+            dups = Counter(keys) - Counter(set(keys))
+            if len(dups) > 0:
+                msg = "Duplicate keys: {}".format(
                     ", ".join("'{}' ({} times)".format(key, dups[key]) for key in dups)
                 )
-            )
+                raise ValueError(msg)
         return dict(node.data)
 
-    def unpack(self):
-        return self.map({Node.Type.DICTIONARY: lambda node: Node.unpack_dict(node)})
+    def unpack(self, check_for_duplicate_keys=True):
+        map_dict = lambda node: Node.unpack_dict(node, check_for_duplicate_keys)
+        return self.map({Node.Type.DICTIONARY: map_dict})
 
     @staticmethod
     def full_unpack_default(node):
